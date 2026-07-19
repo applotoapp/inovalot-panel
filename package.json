@@ -1,0 +1,42 @@
+{
+  "name": "inovalot-panel",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "npm run build",
+    "lint": "eslint . --ignore-pattern .next"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.97",
+    "@ai-sdk/google": "^3.0.93",
+    "@ai-sdk/openai": "^3.0.85",
+    "@ai-sdk/openai-compatible": "^2.0.60",
+    "@ai-sdk/xai": "^3.0.107",
+    "ai": "^6.0.226",
+    "lucide-react": "^0.468.0",
+    "mammoth": "^1.12.0",
+    "next": "16.2.6",
+    "postgres": "^3.4.7",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "unpdf": "^1.6.2",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.6",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3"
+  },
+  "type": "module"
+}

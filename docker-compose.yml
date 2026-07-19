@@ -1,0 +1,110 @@
+services:
+  crmapp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    labels:
+      - traefik.docker.network=coolify
+    environment:
+      NODE_ENV: production
+      APP_URL: ${SERVICE_URL_CRMAPP_3000:-http://localhost:3000}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      AI_CREDENTIALS_SECRET: ${AI_CREDENTIALS_SECRET:-}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@inovalot-panel-postgres:5432/inovalot_panel
+      PGHOST: inovalot-panel-postgres
+      PGPORT: "5432"
+      PGDATABASE: inovalot_panel
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      EVOLUTION_PROVIDER: go
+      EVOLUTION_API_URL: http://inovalot-panel-evolution:8080
+      EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
+      EVOLUTION_INSTANCE_NAME: inovalot-panel
+      EVOLUTION_INSTANCE_TOKEN: ${EVOLUTION_INSTANCE_TOKEN}
+      EVOLUTION_WEBHOOK_URL: http://inovalot-panel-app:3000/api/webhooks/evolution?token=${WEBHOOK_SECRET}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    expose:
+      - "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      evolutiongo:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      default:
+        aliases:
+          - inovalot-panel-app
+
+  evolutiongo:
+    image: evoapicloud/evolution-go:0.7.2
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: 8080
+      CLIENT_NAME: inovalot-panel
+      GLOBAL_API_KEY: ${EVOLUTION_API_KEY}
+      POSTGRES_AUTH_DB: postgresql://postgres:${POSTGRES_PASSWORD}@inovalot-panel-postgres:5432/evogo_auth?sslmode=disable
+      POSTGRES_USERS_DB: postgresql://postgres:${POSTGRES_PASSWORD}@inovalot-panel-postgres:5432/evogo_users?sslmode=disable
+      DATABASE_SAVE_MESSAGES: "true"
+      EVOLUTION_OPERATOR_EMAIL: ${EVOLUTION_OPERATOR_EMAIL:-}
+      CONNECT_ON_STARTUP: "true"
+      WEBHOOK_FILES: "true"
+      WADEBUG: INFO
+      LOGTYPE: console
+      OS_NAME: Inovalot Panel
+      EVENT_IGNORE_GROUP: "false"
+      EVENT_IGNORE_STATUS: "true"
+      QRCODE_MAX_COUNT: "8"
+      PASSKEY_PUBLIC_URL: ${SERVICE_URL_EVOLUTIONGO_8080:-http://localhost:8080}
+      MINIO_ENABLED: "false"
+    expose:
+      - "8080"
+    volumes:
+      - evolution_go_data:/app/dbdata
+      - evolution_go_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      default:
+        aliases:
+          - inovalot-panel-evolution
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init-databases.sql:/docker-entrypoint-initdb.d/01-init-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      default:
+        aliases:
+          - inovalot-panel-postgres
+
+volumes:
+  evolution_go_data:
+  evolution_go_logs:
+  postgres_data:
