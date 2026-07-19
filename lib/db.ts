@@ -1,4 +1,5 @@
 import postgres from "postgres";
+import { specialistSeeds } from "@/lib/specialist-seed";
 
 let client: ReturnType<typeof postgres> | undefined;
 let initialized = false;
@@ -49,10 +50,72 @@ export async function ensureSchema() {
     )
   `;
   await sql`
+    create table if not exists specialists (
+      id uuid primary key,
+      key text not null unique,
+      name text not null,
+      description text not null default '',
+      provider text not null default 'openai',
+      model text not null default 'gpt-4.1-mini',
+      system_prompt text not null,
+      temperature real not null default 0.25,
+      enabled boolean not null default false,
+      is_default boolean not null default false,
+      sort_order integer not null default 100,
+      version integer not null default 1,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `;
+  await sql`
+    create table if not exists knowledge_articles (
+      id uuid primary key,
+      specialist_id uuid not null references specialists(id) on delete cascade,
+      slug text not null,
+      category text not null default 'geral',
+      title text not null,
+      content text not null,
+      source_url text not null default '',
+      enabled boolean not null default true,
+      sort_order integer not null default 100,
+      verified_at timestamptz,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      unique (specialist_id, slug)
+    )
+  `;
+  await sql`
+    create table if not exists specialist_tools (
+      specialist_id uuid not null references specialists(id) on delete cascade,
+      tool_key text not null,
+      enabled boolean not null default false,
+      config jsonb not null default '{}'::jsonb,
+      updated_at timestamptz not null default now(),
+      primary key (specialist_id, tool_key)
+    )
+  `;
+  await sql`
+    create table if not exists tool_audit_logs (
+      id bigserial primary key,
+      instance_name text not null,
+      remote_jid text not null,
+      specialist_id uuid references specialists(id) on delete set null,
+      tool_key text not null,
+      request_summary text not null default '',
+      result_summary text not null default '',
+      status text not null default 'pending',
+      duration_ms integer,
+      created_at timestamptz not null default now()
+    )
+  `;
+  await sql`
     create table if not exists conversation_meta (
       remote_jid text not null,
       instance_name text not null,
       assigned_agent_id uuid references agents(id) on delete set null,
+      active_specialist_id uuid references specialists(id) on delete set null,
+      routing_reason text not null default '',
+      specialist_routed_at timestamptz,
       status text not null default 'open',
       notes text not null default '',
       tags jsonb not null default '[]'::jsonb,
@@ -132,6 +195,9 @@ export async function ensureSchema() {
   await sql`alter table conversation_meta add column if not exists avatar_url text`;
   await sql`alter table conversation_meta add column if not exists avatar_updated_at timestamptz`;
   await sql`alter table conversation_meta add column if not exists agent_paused boolean not null default false`;
+  await sql`alter table conversation_meta add column if not exists active_specialist_id uuid references specialists(id) on delete set null`;
+  await sql`alter table conversation_meta add column if not exists routing_reason text not null default ''`;
+  await sql`alter table conversation_meta add column if not exists specialist_routed_at timestamptz`;
   await sql`alter table agents add column if not exists connection_token text`;
   await sql`alter table agents add column if not exists audio_reply_mode text not null default 'mirror'`;
   await sql`alter table agents add column if not exists tts_voice text not null default 'Achird'`;
@@ -204,10 +270,12 @@ export async function ensureSchema() {
   `;
   await sql`
     insert into conversation_meta (
-      remote_jid, instance_name, assigned_agent_id, status, notes, tags,
+      remote_jid, instance_name, assigned_agent_id, active_specialist_id,
+      routing_reason, specialist_routed_at, status, notes, tags,
       agent_paused, last_read_at, avatar_url, avatar_updated_at, updated_at
     )
     select aliases.canonical_jid, meta.instance_name, meta.assigned_agent_id,
+           meta.active_specialist_id, meta.routing_reason, meta.specialist_routed_at,
            meta.status, meta.notes, meta.tags, meta.agent_paused,
            meta.last_read_at, meta.avatar_url, meta.avatar_updated_at, meta.updated_at
     from conversation_meta meta
@@ -216,6 +284,9 @@ export async function ensureSchema() {
      and aliases.alias_jid = meta.remote_jid
     on conflict (remote_jid, instance_name) do update set
       assigned_agent_id = coalesce(conversation_meta.assigned_agent_id, excluded.assigned_agent_id),
+      active_specialist_id = coalesce(conversation_meta.active_specialist_id, excluded.active_specialist_id),
+      routing_reason = coalesce(nullif(conversation_meta.routing_reason, ''), excluded.routing_reason),
+      specialist_routed_at = greatest(conversation_meta.specialist_routed_at, excluded.specialist_routed_at),
       status = case when conversation_meta.status = 'open' then excluded.status else conversation_meta.status end,
       notes = coalesce(nullif(conversation_meta.notes, ''), excluded.notes),
       tags = case when conversation_meta.tags = '[]'::jsonb then excluded.tags else conversation_meta.tags end,
@@ -246,5 +317,39 @@ export async function ensureSchema() {
   await sql`create index if not exists webhook_events_instance_created_idx on webhook_events(instance_name, created_at desc)`;
   await sql`create index if not exists whatsapp_jid_aliases_canonical_idx on whatsapp_jid_aliases(instance_name, canonical_jid, updated_at desc)`;
   await sql`create unique index if not exists agents_instance_name_idx on agents(instance_name) where instance_name is not null`;
+  await sql`create unique index if not exists specialists_default_idx on specialists(is_default) where is_default = true`;
+  await sql`create index if not exists knowledge_articles_specialist_idx on knowledge_articles(specialist_id, enabled, sort_order)`;
+  await sql`create index if not exists tool_audit_logs_conversation_idx on tool_audit_logs(instance_name, remote_jid, created_at desc)`;
+
+  for (const specialist of specialistSeeds) {
+    await sql`
+      insert into specialists (
+        id, key, name, description, provider, model, system_prompt,
+        temperature, enabled, is_default, sort_order
+      ) values (
+        ${specialist.id}, ${specialist.key}, ${specialist.name}, ${specialist.description},
+        ${specialist.provider}, ${specialist.model}, ${specialist.systemPrompt},
+        ${specialist.temperature}, ${specialist.enabled}, ${specialist.isDefault}, ${specialist.sortOrder}
+      )
+      on conflict (key) do nothing
+    `;
+    const [persistedSpecialist] = await sql`
+      select id from specialists where key = ${specialist.key} limit 1
+    `;
+    if (!persistedSpecialist) continue;
+    for (const article of specialist.knowledge) {
+      await sql`
+        insert into knowledge_articles (
+          id, specialist_id, slug, category, title, content, source_url,
+          enabled, sort_order, verified_at
+        ) values (
+          ${crypto.randomUUID()}, ${persistedSpecialist.id}, ${article.slug}, ${article.category},
+          ${article.title}, ${article.content}, ${article.sourceUrl}, true,
+          ${article.sortOrder}, ${article.verifiedAt}
+        )
+        on conflict (specialist_id, slug) do nothing
+      `;
+    }
+  }
   initialized = true;
 }

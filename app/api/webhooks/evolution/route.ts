@@ -10,6 +10,10 @@ import {
   whatsappDeliveryJid,
 } from "@/lib/whatsapp-identities";
 import { generateAgentReply } from "@/lib/ai-reply";
+import {
+  resolveConversationSpecialist,
+  specialistRuntimeAgent,
+} from "@/lib/specialists";
 import { synthesizeGeminiSpeech } from "@/lib/gemini-speech";
 import { shouldReplyWithAudio } from "@/lib/tts-config";
 import { splitAudioReply } from "@/lib/audio-reply";
@@ -364,8 +368,15 @@ export async function POST(request: NextRequest) {
             `/chat/findMessages/${encodeURIComponent(instance)}`,
             { method: "POST", body: JSON.stringify({ where: { key: { remoteJid } } }) },
           )).slice(-contextMessageCount);
+      const latestIncomingText = [...history].reverse().find((message) => !message.fromMe)?.text || parsed.content;
+      const specialist = await resolveConversationSpecialist({
+        instanceName: instance,
+        remoteJid,
+        messageText: latestIncomingText,
+      });
+      const runtimeAgent = specialistRuntimeAgent(agent, specialist);
       const replyAsAudio = shouldReplyWithAudio(String(agent.audioReplyMode || "mirror"), parsed.type);
-      const reply = await generateAgentReply(agent, history, instance, {
+      const reply = await generateAgentReply(runtimeAgent, history, instance, {
         forAudio: replyAsAudio,
         contextMessageCount,
       });

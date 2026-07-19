@@ -11,6 +11,7 @@
     "start": "next start",
     "test": "npm run build",
     "test:jids": "node --experimental-strip-types --test tests/whatsapp-jids.test.ts",
+    "test:specialists": "node --experimental-strip-types --test tests/specialist-routing.test.ts",
     "lint": "eslint . --ignore-pattern .next"
   },
   "dependencies": {

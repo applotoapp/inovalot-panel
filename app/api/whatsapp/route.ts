@@ -254,6 +254,8 @@ export async function GET(request: NextRequest) {
             latest.instance_name as "instanceName",
             linked_agent.id as "agentId",
             coalesce(linked_agent.name, latest.instance_name) as "agentName",
+            active_specialist.key as "specialistKey",
+            active_specialist.name as "specialistName",
             coalesce(nullif(contact_name.push_name, ''), split_part(latest.remote_jid, '@', 1)) as name,
             split_part(latest.remote_jid, '@', 1) as phone,
             meta.avatar_url as avatar,
@@ -284,6 +286,7 @@ export async function GET(request: NextRequest) {
             limit 1
           ) contact_name on true
           left join agents linked_agent on linked_agent.instance_name = latest.instance_name
+          left join specialists active_specialist on active_specialist.id = meta.active_specialist_id
           where coalesce(meta.status, 'open') <> 'archived'
         `;
         const sorted = [...rows].sort((a, b) => Number(b.lastMessageAt) - Number(a.lastMessageAt)) as StoredConversation[];
@@ -297,18 +300,22 @@ export async function GET(request: NextRequest) {
       );
       const chats = normalizeChats(data);
       const metadata = await db()`
-        select remote_jid as "remoteJid", agent_paused as "agentPaused"
-        from conversation_meta
-        where instance_name = ${instance}
+        select meta.remote_jid as "remoteJid", meta.agent_paused as "agentPaused",
+               active_specialist.key as "specialistKey", active_specialist.name as "specialistName"
+        from conversation_meta meta
+        left join specialists active_specialist on active_specialist.id = meta.active_specialist_id
+        where meta.instance_name = ${instance}
       `;
-      const pausedByJid = new Map(metadata.map((row) => [String(row.remoteJid), Boolean(row.agentPaused)]));
+      const metadataByJid = new Map(metadata.map((row) => [String(row.remoteJid), row]));
       return NextResponse.json({
         data: chats.map((chat) => ({
           ...chat,
           instanceName: instance,
           agentId: scope.agentId || undefined,
           agentName: scope.agentName,
-          agentPaused: pausedByJid.get(chat.id) || false,
+          specialistKey: metadataByJid.get(chat.id)?.specialistKey || undefined,
+          specialistName: metadataByJid.get(chat.id)?.specialistName || undefined,
+          agentPaused: Boolean(metadataByJid.get(chat.id)?.agentPaused),
         })),
         raw: data,
       });

@@ -3,6 +3,8 @@ export type Conversation = {
   instanceName: string;
   agentId?: string;
   agentName: string;
+  specialistKey?: string;
+  specialistName?: string;
   name: string;
   phone: string;
   avatar?: string;

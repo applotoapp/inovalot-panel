@@ -2,6 +2,7 @@
 
 import {
   Archive,
+  BookOpen,
   Bot,
   BotOff,
   Check,
@@ -13,6 +14,7 @@ import {
   Image as ImageIcon,
   Info,
   KeyRound,
+  Library,
   LoaderCircle,
   LogOut,
   Menu,
@@ -37,6 +39,7 @@ import {
   Users,
   Video,
   Volume2,
+  Workflow,
   X,
 } from "lucide-react";
 import Image from "next/image";
@@ -71,7 +74,7 @@ import {
   type GeminiTtsVoice,
 } from "@/lib/tts-config";
 
-type View = "inbox" | "agents" | "settings";
+type View = "inbox" | "agents" | "specialists" | "settings";
 type Connection = "loading" | "open" | "closed" | "unconfigured";
 type ProviderId = "openai" | "xai" | "openrouter" | "anthropic" | "google" | "groq";
 type Agent = {
@@ -93,6 +96,36 @@ type Agent = {
   ttsInstructions: string;
   instanceName?: string | null;
   connectionConfigured?: boolean;
+};
+
+type KnowledgeArticle = {
+  id?: string;
+  slug: string;
+  category: string;
+  title: string;
+  content: string;
+  sourceUrl: string;
+  enabled: boolean;
+  sortOrder: number;
+  verifiedAt?: string | null;
+  updatedAt?: string;
+};
+
+type Specialist = {
+  id: string;
+  key: "geral" | "suporte_ti" | "financeiro";
+  name: string;
+  description: string;
+  provider: Exclude<ProviderId, "groq">;
+  model: string;
+  systemPrompt: string;
+  temperature: number;
+  enabled: boolean;
+  isDefault: boolean;
+  sortOrder: number;
+  version: number;
+  knowledgeArticles: KnowledgeArticle[];
+  tools: { toolKey: string; enabled: boolean }[];
 };
 
 type ProviderStatus = {
@@ -262,6 +295,9 @@ export function AtendimentoApp() {
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [agentForm, setAgentForm] = useState<Omit<Agent, "id">>(defaultAgent);
   const [savingAgent, setSavingAgent] = useState(false);
+  const [specialists, setSpecialists] = useState<Specialist[]>([]);
+  const [specialistForm, setSpecialistForm] = useState<Specialist | null>(null);
+  const [savingSpecialist, setSavingSpecialist] = useState(false);
   const [previewingVoice, setPreviewingVoice] = useState(false);
   const [voicePreviewUrl, setVoicePreviewUrl] = useState("");
   const [providerStatuses, setProviderStatuses] = useState<ProviderStatus[]>([]);
@@ -370,6 +406,22 @@ export function AtendimentoApp() {
     }
   }, [notify]);
 
+  const loadSpecialists = useCallback(async () => {
+    try {
+      const payload = await api<{ data: Specialist[] }>("/api/specialists");
+      setSpecialists(payload.data);
+      setSpecialistForm((current) => {
+        const selected = payload.data.find((specialist) => specialist.id === current?.id)
+          || payload.data.find((specialist) => specialist.key === "geral")
+          || payload.data[0]
+          || null;
+        return selected ? structuredClone(selected) : null;
+      });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Erro ao carregar especialistas.");
+    }
+  }, [notify]);
+
   const loadProviderSettings = useCallback(async () => {
     try {
       const payload = await api<{ data: ProviderStatus[] }>("/api/settings/providers");
@@ -383,6 +435,11 @@ export function AtendimentoApp() {
     const kickoff = window.setTimeout(loadAgents, 0);
     return () => window.clearTimeout(kickoff);
   }, [loadAgents]);
+
+  useEffect(() => {
+    const kickoff = window.setTimeout(loadSpecialists, 0);
+    return () => window.clearTimeout(kickoff);
+  }, [loadSpecialists]);
 
   useEffect(() => {
     if (!agents.length) return;
@@ -862,6 +919,62 @@ export function AtendimentoApp() {
     }
   }
 
+  function editSpecialist(specialist: Specialist) {
+    setSpecialistForm(structuredClone(specialist));
+  }
+
+  function updateKnowledgeArticle(
+    articleIndex: number,
+    changes: Partial<KnowledgeArticle>,
+  ) {
+    setSpecialistForm((current) => current ? {
+      ...current,
+      knowledgeArticles: current.knowledgeArticles.map((article, index) => (
+        index === articleIndex ? { ...article, ...changes } : article
+      )),
+    } : current);
+  }
+
+  function addKnowledgeArticle() {
+    setSpecialistForm((current) => current ? {
+      ...current,
+      knowledgeArticles: [
+        ...current.knowledgeArticles,
+        {
+          slug: `novo-artigo-${Date.now()}`,
+          category: "geral",
+          title: "Novo artigo",
+          content: "Preencha aqui a informação autorizada para este especialista.",
+          sourceUrl: "",
+          enabled: true,
+          sortOrder: (current.knowledgeArticles.length + 1) * 10,
+          verifiedAt: new Date().toISOString(),
+        },
+      ],
+    } : current);
+  }
+
+  async function saveSpecialist(event: FormEvent) {
+    event.preventDefault();
+    if (!specialistForm) return;
+    setSavingSpecialist(true);
+    try {
+      const payload = await api<{ data: Specialist }>("/api/specialists", {
+        method: "POST",
+        body: JSON.stringify(specialistForm),
+      });
+      setSpecialistForm(structuredClone(payload.data));
+      setSpecialists((current) => current.map((specialist) => (
+        specialist.id === payload.data.id ? payload.data : specialist
+      )));
+      notify("Especialista atualizado. As alterações entram no próximo atendimento.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Não foi possível salvar o especialista.");
+    } finally {
+      setSavingSpecialist(false);
+    }
+  }
+
   async function saveProviderCredential(event: FormEvent, provider: ProviderId) {
     event.preventDefault();
     const apiKey = providerKeys[provider]?.trim();
@@ -915,6 +1028,9 @@ export function AtendimentoApp() {
           <button className={view === "agents" ? "active" : ""} onClick={() => { setView("agents"); loadAgents(); }} title="Agentes">
             <Bot size={21} /><span>Agentes</span>
           </button>
+          <button className={view === "specialists" ? "active" : ""} onClick={() => { setView("specialists"); loadSpecialists(); }} title="Especialistas">
+            <Workflow size={21} /><span>Especialistas</span>
+          </button>
           <button className={view === "settings" ? "active" : ""} onClick={() => { setView("settings"); loadProviderSettings(); }} title="Ajustes">
             <Settings size={21} /><span>Ajustes</span>
           </button>
@@ -959,7 +1075,7 @@ export function AtendimentoApp() {
                   <Avatar name={chat.name} src={chat.avatar} />
                   <span className="conversation-copy">
                     <span className="conversation-top"><strong>{chat.name}</strong><time>{formatTime(chat.lastMessageAt, true)}</time></span>
-                    {agentFilter === "all" && <small className="conversation-agent"><Bot size={10} /> {chat.agentName}</small>}
+                    {agentFilter === "all" && <small className="conversation-agent"><Bot size={10} /> {chat.agentName}{chat.specialistName ? ` · ${chat.specialistName}` : ""}</small>}
                     <span className="conversation-bottom"><span>{chat.lastMessageType?.toLowerCase() === "audio" && audioTranscript(chat.lastMessage) ? <em>“{audioTranscript(chat.lastMessage)}”</em> : chat.lastMessage}</span>{chat.unread > 0 && <b>{chat.unread > 99 ? "99+" : chat.unread}</b>}</span>
                   </span>
                 </button>
@@ -980,7 +1096,7 @@ export function AtendimentoApp() {
                 <header className="chat-header">
                   <button className="mobile-back" onClick={() => setSelectedId("")}><Menu size={20} /></button>
                   <Avatar name={selected.name} src={selected.avatar} />
-                  <div className="chat-contact"><strong>{selected.name}</strong><span>{formatPhone(selected.phone)} · {selected.agentName}{selected.agentPaused ? " · Agente pausado" : ""}</span></div>
+                  <div className="chat-contact"><strong>{selected.name}</strong><span>{formatPhone(selected.phone)} · {selected.agentName}{selected.specialistName ? ` · ${selected.specialistName}` : ""}{selected.agentPaused ? " · Agente pausado" : ""}</span></div>
                   <div className="chat-actions">
                     <button title="Chamadas não são disponibilizadas pela integração" disabled><Video size={19} /></button>
                     <button title="Chamadas não são disponibilizadas pela integração" disabled><Phone size={19} /></button>
@@ -1057,6 +1173,7 @@ export function AtendimentoApp() {
               <div className="contact-card"><Avatar name={selected.name} src={selected.avatar} size="lg" /><h3>{selected.name}</h3><p>{formatPhone(selected.phone)}</p><span className="status-badge"><i /> WhatsApp</span></div>
               <div className="detail-section"><label>Responsável</label><button className="select-row"><span className="mini-agent"><CircleUserRound size={18} /> Não atribuído</span><ChevronDown size={16} /></button></div>
               <div className="detail-section"><label>Agente e canal</label><button className="select-row" onClick={() => { const linked = agents.find((agent) => agent.id === selected.agentId); if (linked) editAgent(linked); setView("agents"); }}><span className="mini-agent"><Bot size={18} /> {selected.agentName}</span><ChevronDown size={16} /></button></div>
+              <div className="detail-section"><label>Especialista interno</label><button className="select-row" onClick={() => { const linked = specialists.find((specialist) => specialist.key === selected.specialistKey); if (linked) editSpecialist(linked); setView("specialists"); }}><span className="mini-agent"><Workflow size={18} /> {selected.specialistName || "Aguardando roteamento"}</span><ChevronDown size={16} /></button></div>
               <div className="detail-section"><label>Etiquetas</label><button className="outline-dashed"><Plus size={15} /> Adicionar etiqueta</button></div>
               <div className="detail-section"><label>Notas internas</label><textarea placeholder="Adicione uma observação sobre este atendimento..." rows={4} /></div>
               <div className="detail-actions"><button onClick={archiveConversation}><Archive size={16} /> Arquivar conversa</button></div>
@@ -1129,6 +1246,100 @@ export function AtendimentoApp() {
               </div>
               <footer><button type="button" className="ghost-button" onClick={() => { setEditingAgent(null); setAgentForm(defaultAgent); setVoicePreviewUrl(""); }}>Limpar</button><button className="primary-button" disabled={savingAgent}>{savingAgent ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />} Salvar agente</button></footer>
             </form>
+          </div>
+        </section>
+      ) : view === "specialists" ? (
+        <section className="specialists-workspace">
+          <header className="specialists-title">
+            <div>
+              <p className="eyebrow">Roteamento interno</p>
+              <h1>Especialistas da Marcela</h1>
+              <p>Um único WhatsApp e uma única identidade, com conhecimentos e ferramentas separados por setor.</p>
+            </div>
+            <div className="specialists-summary">
+              <Workflow size={18} />
+              <span><strong>{specialists.filter((specialist) => specialist.enabled).length} ativo</strong><small>{specialists.length} perfis preparados</small></span>
+            </div>
+          </header>
+          <div className="specialists-grid">
+            <div className="specialist-list-card">
+              <div className="card-heading"><h2>Setores internos</h2><span>{specialists.length}</span></div>
+              {specialists.map((specialist) => (
+                <button
+                  type="button"
+                  key={specialist.id}
+                  className={`specialist-row ${specialistForm?.id === specialist.id ? "selected" : ""}`}
+                  onClick={() => editSpecialist(specialist)}
+                >
+                  <span className="specialist-icon"><Workflow size={19} /></span>
+                  <span>
+                    <strong>{specialist.name}</strong>
+                    <small>{specialist.knowledgeArticles.filter((article) => article.enabled).length} artigos · {specialist.tools.filter((tool) => tool.enabled).length} ferramentas</small>
+                  </span>
+                  <i className={specialist.enabled ? "enabled" : ""}>{specialist.enabled ? "Ativo" : "Em preparação"}</i>
+                </button>
+              ))}
+            </div>
+
+            {specialistForm ? (
+              <form className="specialist-form-card" onSubmit={saveSpecialist}>
+                <div className="card-heading">
+                  <div><h2>{specialistForm.name}</h2><p>Versão {specialistForm.version} · chave interna {specialistForm.key}</p></div>
+                  {specialistForm.isDefault && <span className="default-specialist-badge">Rota padrão</span>}
+                </div>
+                <div className="form-grid specialist-form-grid">
+                  <label className="span-2">Nome<input required value={specialistForm.name} onChange={(event) => setSpecialistForm({ ...specialistForm, name: event.target.value })} /></label>
+                  <label className="span-2">Descrição<input value={specialistForm.description} onChange={(event) => setSpecialistForm({ ...specialistForm, description: event.target.value })} /></label>
+                  <label>Provedor<select value={specialistForm.provider} onChange={(event) => setSpecialistForm({ ...specialistForm, provider: event.target.value as Specialist["provider"] })}><option value="openai">OpenAI</option><option value="xai">xAI (Grok)</option><option value="openrouter">OpenRouter</option><option value="anthropic">Anthropic</option><option value="google">Google</option></select></label>
+                  <label>Modelo<input required value={specialistForm.model} onChange={(event) => setSpecialistForm({ ...specialistForm, model: event.target.value })} /></label>
+                  <label className="span-2">Temperatura<div className="range-row"><input type="range" min="0" max="2" step="0.05" value={specialistForm.temperature} onChange={(event) => setSpecialistForm({ ...specialistForm, temperature: Number(event.target.value) })} /><output>{Number(specialistForm.temperature).toFixed(2)}</output></div></label>
+                  <label className="toggle-row span-2">
+                    <span><strong>Especialista disponível para roteamento</strong><small>Quando desativado, a Marcela mantém a conversa no especialista Geral ou no setor atual.</small></span>
+                    <input type="checkbox" checked={specialistForm.enabled} onChange={(event) => setSpecialistForm({ ...specialistForm, enabled: event.target.checked })} />
+                  </label>
+                  <label className="span-2">Prompt especializado<textarea required rows={14} value={specialistForm.systemPrompt} onChange={(event) => setSpecialistForm({ ...specialistForm, systemPrompt: event.target.value })} /></label>
+
+                  <div className="knowledge-editor span-2">
+                    <header>
+                      <span className="knowledge-icon"><Library size={20} /></span>
+                      <span><strong>Base de conhecimento</strong><small>Conteúdo autorizado que será anexado ao contexto deste especialista.</small></span>
+                      <button type="button" className="secondary-button" onClick={addKnowledgeArticle}><Plus size={15} /> Novo artigo</button>
+                    </header>
+                    <div className="knowledge-list">
+                      {specialistForm.knowledgeArticles.map((article, index) => (
+                        <details className="knowledge-article" key={article.id || article.slug} open={index === 0}>
+                          <summary>
+                            <BookOpen size={17} />
+                            <span><strong>{article.title}</strong><small>{article.category} · {article.content.length.toLocaleString("pt-BR")} caracteres</small></span>
+                            <i className={article.enabled ? "enabled" : ""}>{article.enabled ? "Publicado" : "Oculto"}</i>
+                          </summary>
+                          <div className="knowledge-fields">
+                            <label>Título<input required value={article.title} onChange={(event) => updateKnowledgeArticle(index, { title: event.target.value })} /></label>
+                            <label>Categoria<input required value={article.category} onChange={(event) => updateKnowledgeArticle(index, { category: event.target.value })} /></label>
+                            <label className="span-2">Identificador<input required disabled={Boolean(article.id)} pattern="[a-z0-9-]+" value={article.slug} onChange={(event) => updateKnowledgeArticle(index, { slug: event.target.value.toLocaleLowerCase("pt-BR").replace(/[^a-z0-9-]/g, "-") })} /></label>
+                            <label className="span-2">Conteúdo<textarea required rows={10} value={article.content} onChange={(event) => updateKnowledgeArticle(index, { content: event.target.value })} /></label>
+                            <label className="span-2">Fonte oficial<input type="url" value={article.sourceUrl} onChange={(event) => updateKnowledgeArticle(index, { sourceUrl: event.target.value })} placeholder="https://www.inovalot.com.br/" /></label>
+                            <label className="toggle-row span-2"><span><strong>Publicar no contexto</strong><small>{article.verifiedAt ? `Verificado em ${new Date(article.verifiedAt).toLocaleDateString("pt-BR")}` : "Sem data de verificação"}</small></span><input type="checkbox" checked={article.enabled} onChange={(event) => updateKnowledgeArticle(index, { enabled: event.target.checked })} /></label>
+                          </div>
+                        </details>
+                      ))}
+                      {!specialistForm.knowledgeArticles.length && <div className="knowledge-empty"><BookOpen size={24} /><span>Nenhum artigo cadastrado para este setor.</span></div>}
+                    </div>
+                  </div>
+
+                  <div className="specialist-tools-card span-2">
+                    <span className="specialist-tools-icon"><Workflow size={20} /></span>
+                    <span><strong>Ferramentas do especialista</strong><small>{specialistForm.tools.length ? `${specialistForm.tools.filter((tool) => tool.enabled).length} de ${specialistForm.tools.length} habilitadas` : "Nenhuma ferramenta configurada nesta etapa."}</small></span>
+                  </div>
+                </div>
+                <footer>
+                  <button type="button" className="ghost-button" onClick={() => { const original = specialists.find((specialist) => specialist.id === specialistForm.id); if (original) editSpecialist(original); }}>Descartar alterações</button>
+                  <button className="primary-button" disabled={savingSpecialist}>{savingSpecialist ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />} Salvar especialista</button>
+                </footer>
+              </form>
+            ) : (
+              <div className="specialist-form-card specialist-placeholder"><LoaderCircle className="spin" size={24} /> Carregando especialistas...</div>
+            )}
           </div>
         </section>
       ) : (
