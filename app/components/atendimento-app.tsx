@@ -1049,7 +1049,7 @@ export function AtendimentoApp() {
                 </form>
               </>
             ) : (
-              <div className="chat-empty"><div className="empty-illustration"><Scale size={38} /></div><h2>Atendimento jurídico, em um só lugar</h2><p>Selecione uma conversa para visualizar o histórico e responder pelo WhatsApp.</p><span><Sparkles size={15} /> Agentes podem assumir a triagem quando você ativá-los</span></div>
+              <div className="chat-empty"><div className="empty-illustration"><Scale size={38} /></div><h2>Atendimento Inovalot, em um só lugar</h2><p>Selecione uma conversa para visualizar o histórico e responder pelo WhatsApp.</p><span><Sparkles size={15} /> Agentes podem assumir a triagem quando você ativá-los</span></div>
             )}
           </section>
 
