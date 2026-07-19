@@ -16,6 +16,10 @@ import {
 } from "@/lib/whatsapp-normalizers";
 import { whatsappAvatarUrl } from "@/lib/whatsapp-profiles";
 import { downloadMessageMedia } from "@/lib/message-media";
+import {
+  resolveWhatsappConversationJid,
+  whatsappDeliveryJid,
+} from "@/lib/whatsapp-identities";
 
 export const dynamic = "force-dynamic";
 
@@ -310,11 +314,12 @@ export async function GET(request: NextRequest) {
       });
     }
     if (op === "messages") {
-      const remoteJid = z.string().min(3).parse(
+      let remoteJid = z.string().min(3).parse(
         request.nextUrl.searchParams.get("remoteJid"),
       );
       if (isEvolutionGo()) {
         await ensureSchema();
+        remoteJid = await resolveWhatsappConversationJid(instance, remoteJid);
         const rows = await db()`
           select message_id as id, remote_jid as "remoteJid", from_me as "fromMe",
                  content as text, message_type as type,
@@ -489,12 +494,20 @@ export async function POST(request: NextRequest) {
       );
       return NextResponse.json({ data, instance, agentId: scope.agentId });
     }
+    const evolutionGo = isEvolutionGo();
+    if (evolutionGo) await ensureSchema();
+    const conversationJid = evolutionGo
+      ? await resolveWhatsappConversationJid(instance, body.remoteJid)
+      : body.remoteJid;
+    const deliveryJid = evolutionGo
+      ? await whatsappDeliveryJid(instance, conversationJid)
+      : conversationJid;
     if (body.action === "set-agent-paused") {
       await ensureSchema();
       const [metadata] = await db().begin(async (sql) => {
         const rows = await sql`
           insert into conversation_meta (remote_jid, instance_name, agent_paused)
-          values (${body.remoteJid}, ${instance}, ${body.paused})
+          values (${conversationJid}, ${instance}, ${body.paused})
           on conflict (remote_jid, instance_name)
           do update set agent_paused = excluded.agent_paused, updated_at = now()
           returning agent_paused as "agentPaused"
@@ -502,7 +515,7 @@ export async function POST(request: NextRequest) {
         if (body.paused) {
           await sql`
             delete from agent_reply_windows
-            where instance_name = ${instance} and remote_jid = ${body.remoteJid}
+            where instance_name = ${instance} and remote_jid = ${conversationJid}
           `;
         }
         return rows;
@@ -513,7 +526,7 @@ export async function POST(request: NextRequest) {
         agentId: scope.agentId,
       });
     }
-    const number = remoteNumber(body.remoteJid);
+    const number = evolutionGo ? deliveryJid : remoteNumber(conversationJid);
     let data: unknown;
     if (body.action === "send-text") {
       data = await scopedRequest(isEvolutionGo() ? `/send/text` : `/message/sendText/${encodeURIComponent(instance)}`, {
@@ -521,12 +534,13 @@ export async function POST(request: NextRequest) {
         body: JSON.stringify({
           number,
           text: body.text,
+          ...(evolutionGo ? { formatJid: false } : {}),
           ...(body.quotedId
             ? isEvolutionGo()
               ? { quoted: { messageId: body.quotedId } }
               : { quoted: { key: { id: body.quotedId } } }
             : {}),
-          ...(!isEvolutionGo() ? { linkPreview: true } : {}),
+          ...(!evolutionGo ? { linkPreview: true } : {}),
         }),
       });
     } else if (body.action === "send-media") {
@@ -534,6 +548,7 @@ export async function POST(request: NextRequest) {
         const [, base64 = body.media] = body.media.split(",", 2);
         const form = new FormData();
         form.set("number", number);
+        form.set("formatJid", "false");
         form.set("type", body.mediaType);
         form.set("caption", body.caption || "");
         form.set("filename", body.fileName || "arquivo");
@@ -549,23 +564,23 @@ export async function POST(request: NextRequest) {
       data = await scopedRequest(isEvolutionGo() ? `/message/react` : `/message/sendReaction/${encodeURIComponent(instance)}`, {
         method: "POST",
         body: JSON.stringify(isEvolutionGo()
-          ? { number: body.remoteJid, fromMe: body.fromMe, id: body.messageId, reaction: body.reaction }
-          : { key: { remoteJid: body.remoteJid, fromMe: body.fromMe, id: body.messageId }, reaction: body.reaction }),
+          ? { number: deliveryJid, fromMe: body.fromMe, id: body.messageId, reaction: body.reaction }
+          : { key: { remoteJid: conversationJid, fromMe: body.fromMe, id: body.messageId }, reaction: body.reaction }),
       });
     } else if (body.action === "delete-message") {
       data = await scopedRequest(isEvolutionGo() ? `/message/delete` : `/chat/deleteMessageForEveryone/${encodeURIComponent(instance)}`, {
         method: isEvolutionGo() ? "POST" : "DELETE",
         body: JSON.stringify(isEvolutionGo()
-          ? { chat: body.remoteJid, messageId: body.messageId }
-          : { id: body.messageId, remoteJid: body.remoteJid, fromMe: body.fromMe }),
+          ? { chat: deliveryJid, messageId: body.messageId }
+          : { id: body.messageId, remoteJid: conversationJid, fromMe: body.fromMe }),
       });
     } else if (body.action === "archive") {
       data = await scopedRequest(isEvolutionGo()
         ? body.archive ? `/chat/archive` : `/chat/unarchive`
         : `/chat/archiveChat/${encodeURIComponent(instance)}`, {
         method: "POST",
-        body: JSON.stringify(isEvolutionGo() ? { chat: body.remoteJid } : {
-          lastMessage: { key: { id: body.messageId, remoteJid: body.remoteJid, fromMe: false } },
+        body: JSON.stringify(isEvolutionGo() ? { chat: deliveryJid } : {
+          lastMessage: { key: { id: body.messageId, remoteJid: conversationJid, fromMe: false } },
           archive: body.archive,
         }),
       });
@@ -573,7 +588,7 @@ export async function POST(request: NextRequest) {
       data = await scopedRequest(isEvolutionGo() ? `/message/presence` : `/chat/sendPresence/${encodeURIComponent(instance)}`, {
         method: "POST",
         body: JSON.stringify(isEvolutionGo()
-          ? { number, state: body.presence, isAudio: body.presence === "recording", delay: 1200 }
+          ? { number, formatJid: false, state: body.presence, isAudio: body.presence === "recording", delay: 1200 }
           : { number, presence: body.presence, delay: 1200 }),
       });
     } else {
@@ -593,7 +608,7 @@ export async function POST(request: NextRequest) {
       await ensureSchema();
       await db()`
         insert into conversation_meta (remote_jid, instance_name, last_read_at)
-        values (${body.remoteJid}, ${instance}, now())
+        values (${conversationJid}, ${instance}, now())
         on conflict (remote_jid, instance_name)
         do update set last_read_at = excluded.last_read_at, updated_at = now()
       `;
@@ -601,7 +616,7 @@ export async function POST(request: NextRequest) {
       await ensureSchema();
       await db()`
         insert into conversation_meta (remote_jid, instance_name, status)
-        values (${body.remoteJid}, ${instance}, ${body.archive ? "archived" : "open"})
+        values (${conversationJid}, ${instance}, ${body.archive ? "archived" : "open"})
         on conflict (remote_jid, instance_name)
         do update set status = excluded.status, updated_at = now()
       `;

@@ -4,7 +4,11 @@ import { evolutionRequest, isEvolutionGo, remoteNumber } from "@/lib/evolution";
 import { normalizeMessages } from "@/lib/whatsapp-normalizers";
 import { connectionByInstance } from "@/lib/agent-connections";
 import { transcribeAudio } from "@/lib/groq-transcription";
-import { canonicalWhatsappJid } from "@/lib/whatsapp-jids";
+import { canonicalWhatsappJid, whatsappJidAlias } from "@/lib/whatsapp-jids";
+import {
+  resolveWhatsappConversationJid,
+  whatsappDeliveryJid,
+} from "@/lib/whatsapp-identities";
 import { generateAgentReply } from "@/lib/ai-reply";
 import { synthesizeGeminiSpeech } from "@/lib/gemini-speech";
 import { shouldReplyWithAudio } from "@/lib/tts-config";
@@ -76,8 +80,10 @@ async function sendAudioReply(
   audio: NonNullable<Awaited<ReturnType<typeof synthesizeGeminiSpeech>>>,
 ) {
   if (isEvolutionGo()) {
+    const deliveryJid = await whatsappDeliveryJid(instance, remoteJid);
     const form = new FormData();
-    form.set("number", remoteNumber(remoteJid));
+    form.set("number", deliveryJid);
+    form.set("formatJid", "false");
     form.set("type", "audio");
     form.set("caption", "");
     form.set("filename", audio.fileName);
@@ -105,13 +111,17 @@ async function sendTextReply(
   text: string,
   delay = 1200,
 ) {
-  return evolutionRequest(isEvolutionGo() ? `/send/text` : `/message/sendText/${encodeURIComponent(instance)}`, {
+  const evolutionGo = isEvolutionGo();
+  const deliveryJid = evolutionGo
+    ? await whatsappDeliveryJid(instance, remoteJid)
+    : remoteJid;
+  return evolutionRequest(evolutionGo ? `/send/text` : `/message/sendText/${encodeURIComponent(instance)}`, {
     method: "POST",
     body: JSON.stringify({
-      number: remoteNumber(remoteJid),
+      number: evolutionGo ? deliveryJid : remoteNumber(remoteJid),
       text,
       delay,
-      ...(!isEvolutionGo() ? { linkPreview: true } : {}),
+      ...(evolutionGo ? { formatJid: false } : { linkPreview: true }),
     }),
   }, false, connectionToken);
 }
@@ -163,16 +173,18 @@ function parseWebhookMessage(payload: Record<string, unknown>, event: string) {
   const webhookBase64 = String(data.Base64 || data.base64 || message.Base64 || message.base64 || media.Base64 || media.base64 || "");
   const webhookMime = String(data.Mimetype || data.mimetype || message.mimetype || media.mimetype || media.mimeType || "application/octet-stream");
   const fromMe = Boolean(key.fromMe ?? info.IsFromMe ?? info.isFromMe ?? data.FromMe ?? event.includes("SEND"));
-  const remoteJid = canonicalWhatsappJid({
+  const identity = {
     remoteJid: rawRemoteJid,
     fromMe,
     sender: info.Sender || info.sender || data.Sender || data.sender,
     senderAlt: info.SenderAlt || info.senderAlt || data.SenderAlt || data.senderAlt,
     recipientAlt: info.RecipientAlt || info.recipientAlt || data.RecipientAlt || data.recipientAlt,
-  });
+  };
+  const remoteJid = canonicalWhatsappJid(identity);
   return {
     messageId,
     remoteJid,
+    jidAlias: whatsappJidAlias(identity),
     fromMe,
     pushName: String(data.PushName || data.pushName || info.PushName || info.pushName || ""),
     content: messageContent(message),
@@ -235,6 +247,11 @@ export async function POST(request: NextRequest) {
     }
 
     const parsed = parseWebhookMessage(payload, event);
+    parsed.remoteJid = await resolveWhatsappConversationJid(
+      instance,
+      parsed.remoteJid,
+      parsed.jidAlias,
+    );
     const { messageId, remoteJid, fromMe } = parsed;
     if (!messageId || !remoteJid || fromMe || remoteJid.endsWith("@g.us") || remoteJid === "status@broadcast") {
       if (messageId && remoteJid) {

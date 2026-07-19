@@ -72,6 +72,15 @@ export async function ensureSchema() {
     )
   `;
   await sql`
+    create table if not exists whatsapp_jid_aliases (
+      instance_name text not null,
+      alias_jid text not null,
+      canonical_jid text not null,
+      updated_at timestamptz not null default now(),
+      primary key (instance_name, alias_jid)
+    )
+  `;
+  await sql`
     create table if not exists processed_messages (
       message_id text primary key,
       instance_name text not null,
@@ -153,96 +162,89 @@ export async function ensureSchema() {
         nullif(raw #>> '{info,pushName}', '')
       ) is not null
   `;
-  // Evolution Go may emit an internal @lid chat for outgoing messages and the
-  // real phone JID for replies. Merge historic aliases before listing chats.
+  // Build a durable LID -> phone map from historic raw events. A sent event
+  // may already be stored by phone while its raw Info.Chat still carries the
+  // LID, so mappings cannot be inferred from messages.remote_jid alone.
   await sql`
-    with mappings as (
-      select distinct instance_name, remote_jid as alias_jid,
+    with identities as (
+      select instance_name, created_at,
         case
-          when from_me then coalesce(
-            nullif(raw #>> '{Info,RecipientAlt}', ''),
-            nullif(raw #>> '{info,recipientAlt}', '')
-          )
-          else coalesce(
-            nullif(raw #>> '{Info,SenderAlt}', ''),
-            nullif(raw #>> '{info,senderAlt}', ''),
-            nullif(raw #>> '{Info,Sender}', ''),
-            nullif(raw #>> '{info,sender}', '')
-          )
+          when coalesce(raw #>> '{Info,Chat}', raw #>> '{info,chat}', '') like '%@lid'
+            then coalesce(raw #>> '{Info,Chat}', raw #>> '{info,chat}')
+          when remote_jid like '%@lid' then remote_jid
+          when from_me = false and coalesce(raw #>> '{Info,SenderAlt}', raw #>> '{info,senderAlt}', '') like '%@lid'
+            then coalesce(raw #>> '{Info,SenderAlt}', raw #>> '{info,senderAlt}')
+          when from_me = false and coalesce(raw #>> '{Info,Sender}', raw #>> '{info,sender}', '') like '%@lid'
+            then coalesce(raw #>> '{Info,Sender}', raw #>> '{info,sender}')
+        end as alias_jid,
+        case
+          when remote_jid like '%@s.whatsapp.net' then remote_jid
+          when from_me = true and coalesce(raw #>> '{Info,RecipientAlt}', raw #>> '{info,recipientAlt}', '') like '%@s.whatsapp.net'
+            then coalesce(raw #>> '{Info,RecipientAlt}', raw #>> '{info,recipientAlt}')
+          when from_me = false and coalesce(raw #>> '{Info,SenderAlt}', raw #>> '{info,senderAlt}', '') like '%@s.whatsapp.net'
+            then coalesce(raw #>> '{Info,SenderAlt}', raw #>> '{info,senderAlt}')
+          when from_me = false and coalesce(raw #>> '{Info,Sender}', raw #>> '{info,sender}', '') like '%@s.whatsapp.net'
+            then coalesce(raw #>> '{Info,Sender}', raw #>> '{info,sender}')
         end as canonical_jid
       from messages
-      where remote_jid like '%@lid'
-    ), valid_mappings as (
-      select * from mappings
-      where canonical_jid like '%@s.whatsapp.net' and canonical_jid <> alias_jid
+    ), mappings as (
+      select distinct on (instance_name, alias_jid)
+             instance_name, alias_jid, canonical_jid, created_at
+      from identities
+      where alias_jid like '%@lid'
+        and canonical_jid like '%@s.whatsapp.net'
+      order by instance_name, alias_jid, created_at desc
     )
+    insert into whatsapp_jid_aliases (instance_name, alias_jid, canonical_jid, updated_at)
+    select instance_name, alias_jid, canonical_jid, created_at
+    from mappings
+    on conflict (instance_name, alias_jid) do update set
+      canonical_jid = excluded.canonical_jid,
+      updated_at = greatest(whatsapp_jid_aliases.updated_at, excluded.updated_at)
+  `;
+  await sql`
     insert into conversation_meta (
       remote_jid, instance_name, assigned_agent_id, status, notes, tags,
-      last_read_at, updated_at
+      agent_paused, last_read_at, avatar_url, avatar_updated_at, updated_at
     )
-    select mappings.canonical_jid, meta.instance_name, meta.assigned_agent_id,
-           meta.status, meta.notes, meta.tags, meta.last_read_at, meta.updated_at
+    select aliases.canonical_jid, meta.instance_name, meta.assigned_agent_id,
+           meta.status, meta.notes, meta.tags, meta.agent_paused,
+           meta.last_read_at, meta.avatar_url, meta.avatar_updated_at, meta.updated_at
     from conversation_meta meta
-    join valid_mappings mappings
-      on mappings.instance_name = meta.instance_name
-     and mappings.alias_jid = meta.remote_jid
+    join whatsapp_jid_aliases aliases
+      on aliases.instance_name = meta.instance_name
+     and aliases.alias_jid = meta.remote_jid
     on conflict (remote_jid, instance_name) do update set
       assigned_agent_id = coalesce(conversation_meta.assigned_agent_id, excluded.assigned_agent_id),
+      status = case when conversation_meta.status = 'open' then excluded.status else conversation_meta.status end,
       notes = coalesce(nullif(conversation_meta.notes, ''), excluded.notes),
       tags = case when conversation_meta.tags = '[]'::jsonb then excluded.tags else conversation_meta.tags end,
+      agent_paused = conversation_meta.agent_paused or excluded.agent_paused,
       last_read_at = greatest(conversation_meta.last_read_at, excluded.last_read_at),
+      avatar_url = coalesce(conversation_meta.avatar_url, excluded.avatar_url),
+      avatar_updated_at = greatest(conversation_meta.avatar_updated_at, excluded.avatar_updated_at),
       updated_at = greatest(conversation_meta.updated_at, excluded.updated_at)
   `;
   await sql`
-    with mappings as (
-      select distinct instance_name, remote_jid as alias_jid,
-        case
-          when from_me then coalesce(
-            nullif(raw #>> '{Info,RecipientAlt}', ''),
-            nullif(raw #>> '{info,recipientAlt}', '')
-          )
-          else coalesce(
-            nullif(raw #>> '{Info,SenderAlt}', ''),
-            nullif(raw #>> '{info,senderAlt}', ''),
-            nullif(raw #>> '{Info,Sender}', ''),
-            nullif(raw #>> '{info,sender}', '')
-          )
-        end as canonical_jid
-      from messages
-      where remote_jid like '%@lid'
-    )
-    delete from conversation_meta meta using mappings
-    where meta.instance_name = mappings.instance_name
-      and meta.remote_jid = mappings.alias_jid
-      and mappings.canonical_jid like '%@s.whatsapp.net'
-      and mappings.canonical_jid <> mappings.alias_jid
+    delete from conversation_meta meta using whatsapp_jid_aliases aliases
+    where meta.instance_name = aliases.instance_name
+      and meta.remote_jid = aliases.alias_jid
   `;
   await sql`
-    with mappings as (
-      select message_id,
-        case
-          when from_me then coalesce(
-            nullif(raw #>> '{Info,RecipientAlt}', ''),
-            nullif(raw #>> '{info,recipientAlt}', '')
-          )
-          else coalesce(
-            nullif(raw #>> '{Info,SenderAlt}', ''),
-            nullif(raw #>> '{info,senderAlt}', ''),
-            nullif(raw #>> '{Info,Sender}', ''),
-            nullif(raw #>> '{info,sender}', '')
-          )
-        end as canonical_jid
-      from messages
-      where remote_jid like '%@lid'
-    )
-    update messages set remote_jid = mappings.canonical_jid
-    from mappings
-    where messages.message_id = mappings.message_id
-      and mappings.canonical_jid like '%@s.whatsapp.net'
-      and mappings.canonical_jid <> messages.remote_jid
+    delete from agent_reply_windows window using whatsapp_jid_aliases aliases
+    where window.instance_name = aliases.instance_name
+      and window.remote_jid = aliases.alias_jid
+  `;
+  await sql`
+    update messages
+    set remote_jid = aliases.canonical_jid
+    from whatsapp_jid_aliases aliases
+    where messages.instance_name = aliases.instance_name
+      and messages.remote_jid = aliases.alias_jid
   `;
   await sql`create index if not exists messages_chat_time_idx on messages(instance_name, remote_jid, message_timestamp)`;
   await sql`create index if not exists webhook_events_instance_created_idx on webhook_events(instance_name, created_at desc)`;
+  await sql`create index if not exists whatsapp_jid_aliases_canonical_idx on whatsapp_jid_aliases(instance_name, canonical_jid, updated_at desc)`;
   await sql`create unique index if not exists agents_instance_name_idx on agents(instance_name) where instance_name is not null`;
   initialized = true;
 }
