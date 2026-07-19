@@ -231,9 +231,9 @@ export async function ensureSchema() {
       and meta.remote_jid = aliases.alias_jid
   `;
   await sql`
-    delete from agent_reply_windows window using whatsapp_jid_aliases aliases
-    where window.instance_name = aliases.instance_name
-      and window.remote_jid = aliases.alias_jid
+    delete from agent_reply_windows reply_window using whatsapp_jid_aliases aliases
+    where reply_window.instance_name = aliases.instance_name
+      and reply_window.remote_jid = aliases.alias_jid
   `;
   await sql`
     update messages
