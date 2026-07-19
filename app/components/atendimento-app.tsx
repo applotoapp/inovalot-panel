@@ -26,7 +26,6 @@ import {
   Plus,
   RefreshCw,
   Reply,
-  Scale,
   Search,
   SendHorizontal,
   Settings,
@@ -128,8 +127,7 @@ const defaultAgent: Omit<Agent, "id"> = {
   ttsExpressiveness: defaultGeminiTtsExpressiveness,
   ttsInstructions: "",
   instanceName: null,
-  systemPrompt:
-    "Você é o assistente de triagem de um escritório de advocacia. Atenda com empatia e objetividade, identifique o nome da pessoa, o assunto jurídico, a cidade e a urgência. Não prometa resultado, não invente informação e não emita parecer jurídico definitivo. Quando houver risco de prazo, audiência, prisão, violência ou outra urgência, sinalize que um advogado humano deve assumir imediatamente. Finalize cada etapa com uma única pergunta clara.",
+  systemPrompt: "",
 };
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -1049,7 +1047,7 @@ export function AtendimentoApp() {
                 </form>
               </>
             ) : (
-              <div className="chat-empty"><div className="empty-illustration"><Scale size={38} /></div><h2>Atendimento Inovalot, em um só lugar</h2><p>Selecione uma conversa para visualizar o histórico e responder pelo WhatsApp.</p><span><Sparkles size={15} /> Agentes podem assumir a triagem quando você ativá-los</span></div>
+              <div className="chat-empty"><div className="empty-illustration"><Image src="/logo-inovalot-icon.png" alt="" width={48} height={46} /></div><h2>Atendimento Inovalot, em um só lugar</h2><p>Selecione uma conversa para visualizar o histórico e responder pelo WhatsApp.</p><span><Sparkles size={15} /> Agentes podem assumir a triagem quando você ativá-los</span></div>
             )}
           </section>
 
